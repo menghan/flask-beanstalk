@@ -55,6 +55,7 @@ class Worker(Greenlet):
                 self._logger.exception()
             else:
                 job.delete()
+        self._beanstalk.close()
         self._logger.debug('[%s] Stopped.', self)
 
     def work(self, job):
