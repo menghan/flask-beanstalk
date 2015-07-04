@@ -1,56 +1,36 @@
 import logging
 
 from gevent import Greenlet
-from gevent.event import Event
 import gevent
 import beanstalkc
-
 
 RESERVING = 1
 WORKING = 2
 
 
-class Beanstalk(beanstalkc.Connection):
-
-    def __init__(self, app=None):
-        if app:
-            self.init_app(app)
-            self.app = app
-
-    def init_app(self, app):
-        conn_kwargs = {}
-        for n in ('host', 'port', 'parse_yaml', 'conn_timeout'):
-            v = app.config.get('BEANSTALK_' + n.upper())
-            if v:
-                conn_kwargs[n] = v
-        super(Beanstalk, self).__init__(**conn_kwargs)
-
-
 class Worker(Greenlet):
 
-    def __init__(self, id, tubes=(), job_timeout=60, job_max_releases=0,
-                 job_max_kicks=0, logger=None, **kwargs):
+    def __init__(self, id, tube='default', job_timeout=60, logger=None, **kwargs):
         Greenlet.__init__(self)
         self.id = id
         self._beanstalk = beanstalkc.Connection(**kwargs)
-        for tube in tubes:
+        if tube != 'default':
+            self._beanstalk.ignore('default')
             self._beanstalk.watch(tube)
+        self.tube = tube
         self._job_timeout = job_timeout
-        self._job_max_releases = job_max_releases
         if not logger:
             logger = logging.getLogger(repr(self))
             logger.setLevel(logging.DEBUG)
             handler = logging.StreamHandler()
-            handler.setFormatter(
-                logging.Formatter(fmt=('[%r] ' % self) + '%(message)s'),
-            )
+            handler.setFormatter(logging.Formatter('%(message)s'))
             logger.addHandler(handler)
         self._logger = logger
-        self._stop_evt = Event()
+        self.keep_running = True
         self.start()
 
-    def __repr__(self):
-        return "worker%s" % self.id
+    def __str__(self):
+        return 'Worker-%s' % self.id
 
     @classmethod
     def spawn_workers(cls, count, id_func=lambda x: x, **kwargs):
@@ -63,31 +43,27 @@ class Worker(Greenlet):
         gevent.joinall(workers)
 
     def _run(self):
-        self._logger.debug('started')
-        while True:
+        self._logger.debug('[%s] Started.', self)
+        while self.keep_running:
             self.state = RESERVING
             job = self._beanstalk.reserve()
             self.state = WORKING
-            job_stats = job.stats()
-            if self._job_max_releases > 0 and job_stats['releases'] >= self._job_max_releases:
-                job.bury()
-            elif self._job_max_releases > 0 and job_stats['kicks'] >= self._job_max_kicks:
-                job.delete()
-            else:
+            try:
                 self.work(job)
-            if self._stop_evt.is_set():
-                break
+            except Exception as e:
+                self._logger.error('[%s] Uncaught exception: %s', self, e)
+                self._logger.exception()
+            else:
+                job.delete()
+        self._logger.debug('[%s] Stopped.', self)
 
     def work(self, job):
         raise NotImplemented
 
     def stop(self):
-        self._logger.debug('stopping')
-        if self.state == RESERVING:
-            self.kill()
-        else:
-            self._stop_evt.set()
+        self._logger.debug('[%s] Stopping...', self)
+        self.keep_running = False
+        if self.state == WORKING:
             self.join(timeout=self._job_timeout)
-            if not self.dead:
-                self.kill()
-        self._logger.debug('stopped')
+        if not self.dead:
+            self.kill()

@@ -11,7 +11,6 @@ class ExampleWorker(Worker):
         self._logger.info("got job: sleep for %r seconds" % job.body)
         gevent.sleep(int(job.body))
         self._logger.info("finished job")
-        job.delete()
 
 
 if __name__ == '__main__':

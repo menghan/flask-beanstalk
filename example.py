@@ -3,9 +3,24 @@ import random
 from gevent import monkey
 monkey.patch_all()
 
+import beanstalkc
 from flask import Flask
-from flask_beanstalk import Beanstalk
 
+
+class Beanstalk(beanstalkc.Connection):
+
+    def __init__(self, app=None):
+        if app:
+            self.init_app(app)
+            self.app = app
+
+    def init_app(self, app):
+        conn_kwargs = {}
+        for n in ('host', 'port', 'parse_yaml', 'conn_timeout'):
+            v = app.config.get('BEANSTALK_' + n.upper())
+            if v:
+                conn_kwargs[n] = v
+        super(Beanstalk, self).__init__(**conn_kwargs)
 
 app = Flask(__name__)
 beanstalk = Beanstalk(app)
